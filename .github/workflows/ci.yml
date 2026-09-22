@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  lint-and-build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.8', '3.10', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install tooling
+        run: python -m pip install --upgrade pip flake8 build
+      - name: flake8
+        run: flake8 colcon_live_tools
+      - name: Build sdist and wheel
+        run: python -m build
+      - name: Install colcon-core + this package and smoke-test the verbs
+        run: |
+          python -m pip install colcon-core
+          python -m pip install dist/*.whl
+          colcon --help | grep -E "lbuild|lclean"

@@ -1,0 +1,8 @@
+[colcon_core.event_handler]
+live_status = colcon_live_tools.event_handler.live_status:LiveStatusEventHandler
+
+[colcon_core.verb]
+lb = colcon_live_tools.verb.lbuild:LiveBuildVerbShort
+lbuild = colcon_live_tools.verb.lbuild:LiveBuildVerb
+lc = colcon_live_tools.verb.lclean:LiveCleanVerbShort
+lclean = colcon_live_tools.verb.lclean:LiveCleanVerb
