@@ -2,6 +2,18 @@
 Changelog for package colcon-live-tools
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+0.1.1 (2026-09-23)
+------------------
+* No functional changes.
+* README rewritten: English moved to the top (with the original Japanese
+  kept below it), CI/PyPI/license badges added, maintainer-only PyPI/apt
+  publishing instructions moved out to ``.docs/PUBLISHING.md``, and the
+  usage section expanded with a full option reference for ``lbuild``/
+  ``lb``/``lclean``/``lc``.
+* Stale Japanese-only ``TODO`` comments in ``setup.cfg`` resolved and
+  translated (kept bilingual, English + Japanese).
+* Added ``.gitignore`` (covers build artifacts and local ``.pypirc``).
+
 0.1.0 (2026-09-23)
 ------------------
 * Initial release.
