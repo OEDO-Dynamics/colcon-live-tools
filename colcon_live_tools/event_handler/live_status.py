@@ -359,6 +359,8 @@ class LiveStatusEventHandler(EventHandlerExtensionPoint):
     """
 
     PRIORITY = 50
+    #: heading of the final table; subclasses for other verbs override it
+    SUMMARY_TITLE = 'Build time summary'
 
     def __init__(self):  # noqa: D107
         super().__init__()
@@ -507,7 +509,7 @@ class LiveStatusEventHandler(EventHandlerExtensionPoint):
              for s in by_duration] + [0])
 
         print()
-        print(self._paint.bold('Build time summary')
+        print(self._paint.bold(self.SUMMARY_TITLE)
               + '  (wall time {0})'.format(total_duration))
         for state in by_duration:
             if state.rc is None:
@@ -636,3 +638,9 @@ class LiveStatusEventHandler(EventHandlerExtensionPoint):
                 self._screen.uninstall()
             self._print_final_report()
             return
+
+
+class LiveTestStatusEventHandler(LiveStatusEventHandler):
+    """Live status board for `ltest` (same display, test-run heading)."""
+
+    SUMMARY_TITLE = 'Test time summary'

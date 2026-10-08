@@ -2,6 +2,26 @@
 Changelog for package colcon-live-tools
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+0.2.0 (2026-10-09)
+------------------
+* Added ``ltest`` / ``lt`` verb: ``colcon test`` with the same live per-package
+  board, a readable result summary (tests/failures/errors/skipped per package,
+  failing test cases with messages, JUnit locations), a non-zero exit code on any
+  failure, and an isolated ``ROS_DOMAIN_ID`` for the run (``--isolated-domain``,
+  on by default; ``--no-isolated-domain`` to turn off).
+* ``ltest`` options: ``--no-user-site`` (``PYTHONNOUSERSITE=1`` for the test
+  processes), ``--fail-on-skip PATTERN`` (a skip whose reason matches counts as a
+  failure), ``--retest-failed`` (only packages that failed last time).
+* CI mode for ``lbuild`` and ``ltest``: enabled when stdout is not a TTY, with
+  ``--ci``, or when ``CI``/``GITHUB_ACTIONS`` is set. Prints a stable per-package
+  log instead of the live board; on GitHub Actions uses ``::group::`` blocks,
+  ``::error`` annotations and writes a Markdown summary to
+  ``$GITHUB_STEP_SUMMARY``.
+* ``lbuild`` / ``lclean`` behavior on a terminal is unchanged.
+* Added ``test/`` (pytest) covering the JUnit summary, CI mode, GitHub
+  workflow commands, step summary, fail-on-skip, domain isolation and the
+  ``ltest`` verb.
+
 0.1.1 (2026-09-23)
 ------------------
 * No functional changes.
