@@ -45,6 +45,7 @@ from colcon_core.plugin_system import satisfies_version
 from colcon_core.verb import VerbExtensionPoint
 from colcon_core.verb.build import BuildVerb
 
+from .._ci import apply_output_mode
 from .._i18n import detect_language
 
 _DEFAULT_PARALLEL_WORKERS = 0
@@ -85,6 +86,12 @@ _TEXT = {
             "or '0' for no limit (default for 'colcon lbuild'/"
             "'colcon lb': {default}; same option as -j/--jobs)"
         ),
+        'ci_help': (
+            'CI mode: no live board; a stable per-package log instead '
+            '(GitHub Actions groups and annotations, and a step summary '
+            'when $GITHUB_STEP_SUMMARY is set). Also on automatically when '
+            'stdout is not a TTY or CI/GITHUB_ACTIONS is set'
+        ),
     },
     'ja': {
         'description': (
@@ -110,6 +117,12 @@ _TEXT = {
             "並列処理するパッケージ数の上限。'0' は無制限 "
             "('colcon lbuild'/'colcon lb' のデフォルト: {default}。"
             '-j/--jobs と同じオプション)'
+        ),
+        'ci_help': (
+            'CI モード: ライブ表示をやめ、パッケージごとの安定したログを出す '
+            '(GitHub Actions ではグループと注記、$GITHUB_STEP_SUMMARY が設定されて'
+            'いれば要約も書く)。標準出力が端末でない場合や CI/GITHUB_ACTIONS 環境変数が'
+            '設定されている場合も自動で有効'
         ),
     },
     'pt': {
@@ -140,6 +153,13 @@ _TEXT = {
             "'0' para sem limite (padrão para 'colcon lbuild'/'colcon lb': "
             '{default}; mesma opção que -j/--jobs)'
         ),
+        'ci_help': (
+            'Modo CI: sem painel ao vivo; um log estável por pacote '
+            '(grupos e anotações do GitHub Actions, e um resumo em '
+            '$GITHUB_STEP_SUMMARY quando definido). Também ativado '
+            'automaticamente quando a saída padrão não é um TTY ou quando '
+            'CI/GITHUB_ACTIONS está definido'
+        ),
     },
 }
 
@@ -156,7 +176,7 @@ def _find_action(parser, dest):
     return None
 
 
-def _default_event_handlers():
+def _default_event_handlers(live_handler='live_status'):
     """
     Build the ``--event-handlers`` default for this verb.
 
@@ -167,7 +187,8 @@ def _default_event_handlers():
     ``KeyError`` (see ``apply_event_handler_arguments`` in
     ``colcon_core.event_handler``), so only disable the ones that exist.
     ``live_status`` is always included since installing this package is
-    what is registering it in the first place.
+    what is registering it in the first place. `ltest` passes its own live
+    handler name.
     """
     try:
         installed = get_event_handler_extensions(context=None)
@@ -175,7 +196,7 @@ def _default_event_handlers():
         installed = {}
     handlers = [
         f'{name}-' for name in _HANDLERS_TO_DISABLE if name in installed]
-    handlers.append('live_status+')
+    handlers.append(live_handler + '+')
     return handlers
 
 
@@ -225,6 +246,8 @@ class LiveBuildVerb(VerbExtensionPoint):
             '-j', '--jobs', dest='parallel_workers', metavar='NUMBER',
             type=int,
             help=text['jobs_help'])
+        parser.add_argument(
+            '--ci', action='store_true', help=text['ci_help'])
         # the '-j'/'--jobs' action above shares a dest with the
         # '--parallel-workers' action that add_executor_arguments() already
         # added inside self._build_verb.add_arguments(); since that action
@@ -239,6 +262,10 @@ class LiveBuildVerb(VerbExtensionPoint):
                     default=_DEFAULT_PARALLEL_WORKERS)
 
     def main(self, *, context):  # noqa: D102
+        # decides live board vs CI log for this run; must happen before
+        # colcon creates the event handlers (inside the build's executor)
+        apply_output_mode(
+            context.args, live='live_status', ci_handler='live_tools_ci_status')
         return self._build_verb.main(context=context)
 
 

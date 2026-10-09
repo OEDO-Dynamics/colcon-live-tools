@@ -55,6 +55,15 @@ This package adds three things:
 3. **`lclean` / `lc` verb** — a `catkin clean` equivalent. Shows whichever of the
    `build`/`install`/`log` directories actually exist and asks for confirmation before
    removing them, unless `-y`/`--yes` is passed.
+4. **`ltest` / `lt` verb** — `colcon test` with the same live board, a readable result
+   summary (tests / failures / errors / skipped per package, the failing test cases with
+   their messages, and where the JUnit files are), a non-zero exit code on any failure,
+   and an isolated `ROS_DOMAIN_ID` for the run.
+5. **CI mode** (`lbuild` and `ltest`) — when `--ci` is given or the `CI` /
+   `GITHUB_ACTIONS` environment variable is set, the live board is replaced by a stable
+   per-package log: GitHub Actions groups, `::error` annotations, and a Markdown summary
+   in `$GITHUB_STEP_SUMMARY`. A non-terminal stdout alone does not switch modes, so
+   `colcon lb | tee log` prints what 0.1.1 printed.
 
 The only dependency is `colcon-core` — no `rich`, no `curses`.
 
@@ -112,6 +121,113 @@ colcon lclean --build-base b2 --install-base i2 --log-base l2  # non-default dir
 Only removes directories that actually exist; nothing else is touched (no per-package
 granularity, no build "profiles" the way `catkin_tools` has).
 
+### `colcon ltest` / `colcon lt`
+
+`colcon lt` (long form `colcon ltest`) accepts every argument `colcon test` does, including
+`--packages-select`, `--packages-up-to`, `--retest-until-pass` and `--abort-on-error`.
+
+```bash
+colcon lt --packages-select my_pkg               # live board, then a summary
+colcon lt --retest-failed                        # only the packages that failed last time
+colcon lt --fail-on-skip 'requires hardware'     # a skip whose reason matches counts as a failure
+colcon lt --no-isolated-domain --no-user-site    # keep the caller's ROS environment as is
+```
+
+| Option | Default | What it does |
+|---|---|---|
+| exit code | non-zero on any failure | A failing test case makes the run fail even if `colcon test` itself returned 0 (the same as `colcon test --return-code-on-test-failure`, but always on). |
+| `--allow-no-tests` | off | In CI mode, a run in which no test case ran ends non-zero (so a mistyped `--packages-select` cannot turn green). This flag allows it (also pass it for workspaces whose tests write no JUnit XML, e.g. plain CTest-only CMake packages). In a terminal the run only prints a warning. |
+| `--isolated-domain` / `--no-isolated-domain` | **on** | Picks a random `ROS_DOMAIN_ID` from 1 to 101 (never the current one) whose DDS ports are free on this host, and sets `ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST`. See below for why. |
+| `--no-user-site` | off | Sets `PYTHONNOUSERSITE=1` for the test processes, so packages in `~/.local` cannot shadow the workspace. colcon itself is not affected. |
+| `--fail-on-skip PATTERN` | none | Regular expression matched against each skipped test case's skip reason. A match is counted as a failure (repeatable). |
+| `--retest-failed` | off | Only tests the packages that failed in the last `ltest` run, recorded in `build/.ltest-last-failed.json`. Combined with `--packages-select` it narrows further. Packages that were not run keep their recorded state. |
+| `--ci` | off | Forces CI mode (see below). |
+
+After the run, a summary is printed:
+
+```
+Test time summary  (wall time 6.13s, ROS_DOMAIN_ID=217, ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST)
+  Package              Tests  Failures  Errors  Skipped  Result
+  oedo_response_curve    147         0       0       18  PASS
+  oedo_foo                40         1       0        0  FAIL
+  total                  187         1       0       18
+
+1 package(s) failed: oedo_foo
+----- oedo_foo: failures -----
+  FAILED  CurveTest.bad
+      Expected: 1
+      Which is: 2
+      at test/curve_test.cpp:42
+      junit: .../build/oedo_foo/test_results/oedo_foo/gtest.xml
+```
+
+The JUnit files are read from `build/<package>/` (or `--test-result-base`), and only files
+written by this run are counted, so results left over from an earlier run do not show up.
+A package with no JUnit file and exit code 0 is reported as `NO JUNIT`, not as a failure.
+
+**Why the isolated domain is on by default, and why 1 to 101.** On a machine where the same LAN also has
+live robot nodes, a test that publishes or subscribes on the default domain can talk to
+them. Picking a free domain and keeping discovery on loopback stops test traffic from
+leaving the process group that colcon started. Use `--no-isolated-domain` when a test
+really needs to reach another machine, or in an environment you fully control. The domain
+choice is a heuristic: it sees DDS ports bound on this host, not participants on other
+machines (which loopback discovery does not reach anyway). Domain 0 is the default domain
+that the isolation is meant to avoid. Above 101 the DDS ports reach the Linux ephemeral
+port range (32768–60999), where a clash fails at random, so the candidates are 1 to 101
+(the range ROS 2 recommends on Linux).
+
+**What `--no-user-site` does and does not do.** It sets the variable in the environment
+of the whole `colcon test` run, so every Python child process started by a test (not only
+`pytest`) runs without the user site-packages. There is no way to narrow it to `pytest`
+alone. The `colcon` process itself is already running and is not affected.
+
+### CI mode (GitHub Actions and other CI)
+
+CI mode is chosen per run and applies to `colcon lbuild`/`lb` and `colcon ltest`/`lt`. It is on
+when `--ci` is passed, or when `CI` or `GITHUB_ACTIONS` is set to a value other than
+`0`/`false`/`no`/`off` (GitHub Actions sets `GITHUB_ACTIONS` for you). Output piped to a
+file without these settings is the same as in earlier releases.
+
+In CI mode there is no cursor movement. Each package's output is printed as one block when
+its job ends (so parallel packages never interleave), preceded by `Starting >>> <pkg>` and
+followed by `Finished <<< <pkg> [time]` or `Failed <<< <pkg> ...`. On GitHub Actions:
+
+- each block is a `::group::` (collapsed in the log),
+- a failed package gets an `::error` annotation, with `file=`/`line=` when a compiler
+  diagnostic was seen,
+- a failing test case gets an `::error` annotation with its file and line when JUnit
+  provides them,
+- the summary is appended to `$GITHUB_STEP_SUMMARY` as Markdown tables.
+
+Outside GitHub Actions the groups and annotations are replaced by plain
+`===== <pkg>: OK ... =====` lines, and no workflow commands are printed.
+
+A workflow example:
+
+```yaml
+name: CI
+on: [push, pull_request]
+jobs:
+  build-and-test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ROS 2 and colcon
+        run: |
+          # install ROS 2 Jazzy and colcon-common-extensions as your project already does
+          python3 -m pip install --break-system-packages colcon-live-tools
+      - name: Build
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          colcon lb --packages-select my_pkg
+      - name: Test
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          colcon lt --packages-select my_pkg --fail-on-skip 'requires hardware'
+```
+
+`colcon lt` exits non-zero when a test fails, so the step fails without further configuration.
+
 ### Trying it out without touching your own workspace
 
 ```bash
@@ -139,11 +255,9 @@ reports for your environment is a reliable reference.)
 
 ### Non-TTY environments (CI, output redirected to a file)
 
-When `sys.stdout.isatty()` is false, no live redraw happens (redrawing a log file has no
-effect). One-line `Starting >>> pkg` / `Finished <<< pkg [1.23s]` logging still comes
-from colcon's own `console_start_end` handler (on by default) as usual, so
-`live_status` doesn't duplicate it. The final build-time table and failure tails are
-always printed — TTY or not, colored or not.
+CI mode is described above. The final table and the failure tails are printed in every mode,
+and are plain text when not on a terminal. Output to a pipe or a log file is unchanged unless
+CI mode is requested.
 
 ## Reading the output
 
@@ -281,6 +395,13 @@ colcon lbuild
    引数の説明のみ。`colcon build` 本来の引数の説明は英語のまま）。
 3. **`lclean` / `lc` コマンド（colcon の verb）** -- `catkin clean` 相当。`build`/`install`/`log`
    ディレクトリのうち実際に存在するものだけを表示し、`-y`/`--yes` を渡さない限り削除前に確認を求める。
+4. **`ltest` / `lt` コマンド（colcon の verb）** -- `colcon test` にパッケージごとのライブ表示を付け、
+   見やすい結果要約（パッケージごとの tests/failures/errors/skipped、失敗したテストケースとメッセージ、
+   junit の場所）を出す。失敗があれば非0で終了し、実行ごとに ROS_DOMAIN_ID を分離する。
+5. **CI モード**（`lbuild` と `ltest`） -- `--ci` を渡した場合、または `CI`/`GITHUB_ACTIONS`
+   環境変数が設定されている場合、ライブ表示をやめてパッケージごとの安定したログにする（GitHub Actions の
+   グループと `::error` 注記、`$GITHUB_STEP_SUMMARY` への Markdown 要約）。標準出力が端末でないだけでは
+   切り替わらないので、`colcon lb | tee log` の出力は 0.1.1 と同じになる。
 
 依存は `colcon-core` のみ。`rich` や `curses` などは使わない。
 
@@ -338,6 +459,68 @@ colcon lclean --build-base b2 --install-base i2 --log-base l2  # ディレクト
 実在するディレクトリだけを削除する（パッケージ単位の削除や、`catkin_tools` にあるような
 ビルドプロファイルの概念はない）。
 
+### `colcon ltest` / `colcon lt`
+
+`colcon lt`（正式名 `colcon ltest`）は `colcon test` が受け付ける引数をすべて受け付ける
+（`--packages-select`、`--packages-up-to`、`--retest-until-pass`、`--abort-on-error` など）。
+
+```bash
+colcon lt --packages-select my_pkg               # ライブ表示のあと要約を出す
+colcon lt --retest-failed                        # 前回失敗したパッケージだけ回す
+colcon lt --fail-on-skip 'requires hardware'     # スキップ理由が一致したものを失敗扱い
+colcon lt --no-isolated-domain --no-user-site    # 呼び出し元の ROS 環境のまま実行
+```
+
+| オプション | 既定 | 働き |
+|---|---|---|
+| 終了コード | 失敗があれば非0 | `colcon test` 自体が 0 を返しても、失敗したテストケースがあれば非0（`--return-code-on-test-failure` と同じだが常に有効） |
+| `--allow-no-tests` | 無効 | CI モードで試験ケースが1件も実行されなかった場合に非0で終わる（打ち間違えた `--packages-select` で緑にならないため）。このフラグで許可する（JUnit を出さない試験だけのワークスペース、例: CTest のみの素の CMake パッケージでも指定する）。端末では警告のみ |
+| `--isolated-domain` / `--no-isolated-domain` | **有効** | この機で DDS ポートの空いている乱数の `ROS_DOMAIN_ID`（1〜101、現在の値は除く）を選び、`ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST` を設定する。理由は後述 |
+| `--no-user-site` | 無効 | テストのプロセスに `PYTHONNOUSERSITE=1` を渡し、`~/.local` のパッケージがワークスペースを隠さないようにする。colcon 本体には影響しない |
+| `--fail-on-skip PATTERN` | なし | スキップされたテストケースの理由に対する正規表現。一致したものは失敗として数える（複数指定可） |
+| `--retest-failed` | 無効 | 前回の `ltest` 実行で失敗したパッケージだけを回す（`build/.ltest-last-failed.json` に記録）。`--packages-select` と併用すると両方で絞り込む。今回実行されなかったパッケージの記録は残す |
+| `--ci` | 無効 | CI モードを強制する（後述） |
+
+実行後は次のような要約を出す（上の英語版と同じ形式）。junit は `build/<パッケージ>/`（または
+`--test-result-base`）から読み、今回の実行で書かれたファイルだけを数えるので、以前の結果が混ざらない。
+junit が無く終了コードが 0 のパッケージは失敗ではなく `NO JUNIT` と表示する。
+
+**分離ドメインを既定で有効にする理由と、候補を 1〜101 にする理由。** 同じ LAN に実機の ROS ノードがいる環境では、既定ドメインで
+publish/subscribe する試験が実機と混線しうる（建機の制御系では危険）。空いている乱数のドメインを選び、
+検出を loopback に限ることで、試験の通信が colcon を起動した側の外へ出ないようにする。試験が本当に
+別マシンへ届く必要がある場合や、完全に管理された環境では `--no-isolated-domain` を使う。ドメインの
+空き判定は「この機で DDS ポートが塞がっていないか」のヒューリスティックで、別マシンの参加者は見えない
+（そもそも loopback の検出では届かない）。ドメイン 0 は分離したい既定ドメインそのもの。101 より上では
+DDS ポートが Linux のエフェメラルポート範囲（32768〜60999）に入り、衝突すると不定期に失敗するため、
+候補は ROS 2 が Linux で推奨する 1〜101 に限る。
+
+**`--no-user-site` の効く範囲。** 変数は `colcon test` 全体の環境に設定されるため、試験が起動する Python の
+子プロセス（`pytest` だけでなくすべて）が ユーザー site-packages なしで動く。`pytest` だけに絞る手段は無い。
+すでに動いている `colcon` プロセス本体には影響しない。
+
+### CI モード（GitHub Actions など）
+
+CI モードは実行ごとに決まり、`colcon lbuild`/`lb` と `colcon ltest`/`lt` の両方に効く:
+
+- `--ci` を渡した場合、または `CI` か `GITHUB_ACTIONS` が `0`/`false`/`no`/`off` 以外に設定されている場合
+  （GitHub Actions は `GITHUB_ACTIONS` を自動で設定する）。
+- 上記のどれでもない場合（パイプ、ログファイル）は、0.1.1 と同じ出力になる。
+
+CI モードではカーソル移動をしない。各パッケージの出力は、そのジョブが終わった時点で 1 ブロックとして
+出す（並列のパッケージ同士が混ざらない）。前に `Starting >>> <パッケージ>`、後ろに
+`Finished <<< <パッケージ> [時間]` または `Failed <<< ...` を付ける。GitHub Actions では:
+
+- 各ブロックは `::group::`（ログ上で折りたたまれる）、
+- 失敗したパッケージには `::error` 注記（コンパイラの診断を見ていれば `file=`/`line=` 付き）、
+- junit が行番号を持つ失敗したテストケースには、そのファイルと行の `::error` 注記、
+- 要約を Markdown の表で `$GITHUB_STEP_SUMMARY` に追記する。
+
+GitHub Actions 以外では、グループと注記の代わりに `===== <パッケージ>: OK ... =====` の行を出し、
+ワークフローコマンドは出さない。
+
+ワークフローの例は上の英語版を参照（`colcon lb` でビルド、`colcon lt --fail-on-skip '...'` で試験。
+`colcon lt` は失敗があると非0で終わるので、追加の設定なしでステップが失敗する）。
+
 ### 自分のワークスペースを使わずに試す
 
 ```bash
@@ -363,11 +546,8 @@ colcon build --event-handlers status- summary- console_start_end- console_stderr
 
 ### 非TTY環境（CI・ログファイル出力など）
 
-`sys.stdout.isatty()` が False の場合、ライブ描画は行わない（ログファイルに描画しても意味がないため）。
-`Starting >>> pkg` / `Finished <<< pkg [1.23s]` のような1行ログは、有効になっている
-`console_start_end` ハンドラ（colcon 標準、デフォルト有効）がそのまま出力するので、
-`live_status` 側で重複して出すことはしない。ビルド終了時のテーブルと失敗ログの末尾は
-TTY かどうかに関わらず常に出力される。
+CI モードは上のとおり。終了時のテーブルと失敗ログの末尾はどのモードでも出力され、端末でない場合は
+プレーンテキストになる。CI モードを要求しない限り、パイプやログファイルへの出力は変わらない。
 
 ## 出力の読み方
 
