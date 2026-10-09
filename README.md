@@ -136,7 +136,7 @@ colcon lt --no-isolated-domain --no-user-site    # keep the caller's ROS environ
 | Option | Default | What it does |
 |---|---|---|
 | exit code | non-zero on any failure | A failing test case makes the run fail even if `colcon test` itself returned 0 (the same as `colcon test --return-code-on-test-failure`, but always on). |
-| `--allow-no-tests` | off | In CI mode, a run in which no test case ran ends non-zero (so a mistyped `--packages-select` cannot turn green). This flag allows it. In a terminal the run only prints a warning. |
+| `--allow-no-tests` | off | In CI mode, a run in which no test case ran ends non-zero (so a mistyped `--packages-select` cannot turn green). This flag allows it (also pass it for workspaces whose tests write no JUnit XML, e.g. plain CTest-only CMake packages). In a terminal the run only prints a warning. |
 | `--isolated-domain` / `--no-isolated-domain` | **on** | Picks a random `ROS_DOMAIN_ID` from 1 to 101 (never the current one) whose DDS ports are free on this host, and sets `ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST`. See below for why. |
 | `--no-user-site` | off | Sets `PYTHONNOUSERSITE=1` for the test processes, so packages in `~/.local` cannot shadow the workspace. colcon itself is not affected. |
 | `--fail-on-skip PATTERN` | none | Regular expression matched against each skipped test case's skip reason. A match is counted as a failure (repeatable). |
@@ -474,7 +474,7 @@ colcon lt --no-isolated-domain --no-user-site    # 呼び出し元の ROS 環境
 | オプション | 既定 | 働き |
 |---|---|---|
 | 終了コード | 失敗があれば非0 | `colcon test` 自体が 0 を返しても、失敗したテストケースがあれば非0（`--return-code-on-test-failure` と同じだが常に有効） |
-| `--allow-no-tests` | 無効 | CI モードで試験ケースが1件も実行されなかった場合に非0で終わる（打ち間違えた `--packages-select` で緑にならないため）。このフラグで許可する。端末では警告のみ |
+| `--allow-no-tests` | 無効 | CI モードで試験ケースが1件も実行されなかった場合に非0で終わる（打ち間違えた `--packages-select` で緑にならないため）。このフラグで許可する（JUnit を出さない試験だけのワークスペース、例: CTest のみの素の CMake パッケージでも指定する）。端末では警告のみ |
 | `--isolated-domain` / `--no-isolated-domain` | **有効** | この機で DDS ポートの空いている乱数の `ROS_DOMAIN_ID`（1〜101、現在の値は除く）を選び、`ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST` を設定する。理由は後述 |
 | `--no-user-site` | 無効 | テストのプロセスに `PYTHONNOUSERSITE=1` を渡し、`~/.local` のパッケージがワークスペースを隠さないようにする。colcon 本体には影響しない |
 | `--fail-on-skip PATTERN` | なし | スキップされたテストケースの理由に対する正規表現。一致したものは失敗として数える（複数指定可） |

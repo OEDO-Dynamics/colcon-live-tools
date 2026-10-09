@@ -306,8 +306,9 @@ class LiveTestVerb(VerbExtensionPoint):
                 print(text['no_record'])
             else:
                 selected = previous_failed
-                if args.packages_select:
-                    selected = [p for p in args.packages_select if p in previous_failed]
+                requested = getattr(args, 'packages_select', None)
+                if requested:
+                    selected = [p for p in requested if p in previous_failed]
                 if not selected:
                     print(text['nothing_to_retest'])
                     return 0
@@ -340,7 +341,7 @@ class LiveTestVerb(VerbExtensionPoint):
         failed = [row.name for row in rows if row.failed]
         total_tests = sum(row.tests for row in rows)
         no_tests = not rows or total_tests == 0
-        missing = [name for name in (args.packages_select or [])
+        missing = [name for name in (getattr(args, 'packages_select', None) or [])
                    if name not in records]
         if no_tests:
             print(text['no_tests'])
