@@ -95,3 +95,22 @@ def test_run_recorder_records_rc_skip_and_test_failure():
     assert snap['pkg_b']['skipped'] is True and snap['pkg_b']['rc'] is None
     run_recorder.reset()
     assert run_recorder.snapshot() == {}
+
+
+def test_test_run_group_titles_say_done_or_fail(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv('GITHUB_ACTIONS', 'true')
+    monkeypatch.delenv('GITHUB_STEP_SUMMARY', raising=False)
+    from colcon_core.event.test import TestFailure
+    handler = CiTestStatusEventHandler()
+    job_ok, job_bad, job_tf = object(), object(), object()
+    handler((JobStarted('pkg_ok'), job_ok))
+    handler((JobEnded('pkg_ok', 0), job_ok))
+    handler((JobStarted('pkg_bad'), job_bad))
+    handler((JobEnded('pkg_bad', 1), job_bad))
+    handler((JobStarted('pkg_tf'), job_tf))
+    handler((TestFailure('pkg_tf'),))
+    handler((JobEnded('pkg_tf', 0), job_tf))
+    out = capsys.readouterr().out
+    assert '::group::pkg_ok: done' in out
+    assert '::group::pkg_bad: FAIL' in out
+    assert '::group::pkg_tf: FAIL' in out

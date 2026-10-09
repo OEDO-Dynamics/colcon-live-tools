@@ -12,15 +12,14 @@ import pytest
 from colcon_live_tools import _ci
 
 
-def test_ci_mode_from_environment_and_tty():
-    assert _ci.is_ci_mode(environ={}, isatty=True) is False
-    assert _ci.is_ci_mode(environ={}, isatty=False) is True
-    assert _ci.is_ci_mode(environ={}, isatty=True, forced=True) is True
-    assert _ci.is_ci_mode(environ={'CI': 'true'}, isatty=True) is True
-    assert _ci.is_ci_mode(environ={'GITHUB_ACTIONS': 'true'}, isatty=True) is True
+def test_ci_mode_from_flags_and_environment_only():
+    assert _ci.is_ci_mode(environ={}) is False
+    assert _ci.is_ci_mode(environ={}, forced=True) is True
+    assert _ci.is_ci_mode(environ={'CI': 'true'}) is True
+    assert _ci.is_ci_mode(environ={'GITHUB_ACTIONS': 'true'}) is True
     # explicit "off" values do not turn CI mode on
-    assert _ci.is_ci_mode(environ={'CI': '0'}, isatty=True) is False
-    assert _ci.is_ci_mode(environ={'CI': 'false'}, isatty=True) is False
+    assert _ci.is_ci_mode(environ={'CI': '0'}) is False
+    assert _ci.is_ci_mode(environ={'CI': 'false'}) is False
     assert _ci.is_github_actions({'GITHUB_ACTIONS': 'true'}) is True
     assert _ci.is_github_actions({}) is False
 
@@ -28,16 +27,28 @@ def test_ci_mode_from_environment_and_tty():
 def test_apply_output_mode_swaps_live_board_for_ci_log():
     args = argparse.Namespace(
         ci=False, event_handlers=['status-', 'live_status+'])
-    # a TTY without CI variables keeps the live board
+    # no flag and no CI variables: the live board, as in 0.1.1
     assert _ci.apply_output_mode(
-        args, live='live_status', ci_handler='ci_status',
-        environ={}, isatty=True) is False
+        args, live='live_status', ci_handler='live_tools_ci_status',
+        environ={}, registered={'live_status', 'live_tools_ci_status'}) is False
     assert args.event_handlers == ['status-', 'live_status+']
-    # a pipe switches to the CI log, dropping only the live handler
+    # --ci, or CI / GITHUB_ACTIONS set, switches to the CI log
+    args.ci = True
     assert _ci.apply_output_mode(
-        args, live='live_status', ci_handler='ci_status',
-        environ={}, isatty=False) is True
-    assert args.event_handlers == ['status-', 'ci_status+']
+        args, live='live_status', ci_handler='live_tools_ci_status',
+        environ={}, registered={'live_status', 'live_tools_ci_status'}) is True
+    assert args.event_handlers == ['status-', 'live_tools_ci_status+']
+
+
+def test_piped_run_keeps_the_live_board_handlers(tmp_path):
+    """A non-TTY stdout alone must not change the handlers (0.1.1 behavior)."""
+    args = argparse.Namespace(
+        ci=False, event_handlers=['status-', 'summary-', 'live_status+'])
+    before = list(args.event_handlers)
+    assert _ci.apply_output_mode(
+        args, live='live_status', ci_handler='live_tools_ci_status',
+        environ={}, registered={'live_status', 'live_tools_ci_status'}) is False
+    assert args.event_handlers == before
 
 
 def test_workflow_command_escapes_data_and_properties():
@@ -116,11 +127,18 @@ def test_apply_output_mode_keeps_live_board_when_ci_handler_is_missing():
         ci=True, event_handlers=['status-', 'live_status+'])
     # e.g. another installation shadows this package's entry points
     assert _ci.apply_output_mode(
-        args, live='live_status', ci_handler='ci_status',
-        environ={}, isatty=False, registered={'live_status'}) is False
+        args, live='live_status', ci_handler='live_tools_ci_status',
+        environ={}, registered={'live_status'}) is False
     assert args.event_handlers == ['status-', 'live_status+']
-    assert _ci.apply_output_mode(
-        args, live='live_status', ci_handler='ci_status',
-        environ={}, isatty=False,
-        registered={'live_status', 'ci_status'}) is True
-    assert args.event_handlers == ['status-', 'ci_status+']
+
+
+def test_pick_free_domain_id_stays_in_1_to_101_and_skips_excluded():
+    seen = set()
+    for seed in range(50):
+        domain = _ci.pick_free_domain_id(
+            rng=random.Random(seed), is_free=lambda d: True, exclude=(5,))
+        seen.add(domain)
+    assert seen <= set(range(1, 102)) - {5}
+    assert len(seen) > 10  # actually random, not a fixed value
+    # the highest DDS port of domain 101 stays below the ephemeral range
+    assert max(_ci.domain_ports(101)) < 32768

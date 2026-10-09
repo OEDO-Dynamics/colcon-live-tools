@@ -30,6 +30,7 @@ from colcon_core.event.job import JobSkipped
 from colcon_core.event.job import JobStarted
 from colcon_core.event.output import StderrLine
 from colcon_core.event.output import StdoutLine
+from colcon_core.event.test import TestFailure
 from colcon_core.event_handler import EventHandlerExtensionPoint
 from colcon_core.event_handler import format_duration
 from colcon_core.event_reactor import EventReactorShutdown
@@ -51,7 +52,7 @@ class _CiJob:
 
     __slots__ = (
         'identifier', 'start', 'end', 'rc', 'lines', 'warnings', 'errors',
-        'first_error')
+        'first_error', 'test_failed')
 
     def __init__(self, identifier):  # noqa: D107
         self.identifier = identifier
@@ -62,6 +63,7 @@ class _CiJob:
         self.warnings = 0
         self.errors = 0
         self.first_error = None
+        self.test_failed = False
 
     def duration(self):
         if self.start is None:
@@ -120,16 +122,19 @@ class CiStatusEventHandler(EventHandlerExtensionPoint):
                         match.group('file'), match.group('line'),
                         match.group('msg'))
 
+    def _verdict(self, state, rc):
+        """(verdict, word) shown in the group title and the result line."""
+        if rc == 0:
+            return 'OK', 'Finished'
+        if rc == SIGINT_RESULT:
+            return 'ABORTED', 'Aborted'
+        return 'FAILED', 'Failed'
+
     def _finish(self, state, rc):
         state.end = time.monotonic()
         state.rc = rc
         self._finished.append(state)
-        if rc == 0:
-            verdict, word = 'OK', 'Finished'
-        elif rc == SIGINT_RESULT:
-            verdict, word = 'ABORTED', 'Aborted'
-        else:
-            verdict, word = 'FAILED', 'Failed'
+        verdict, word = self._verdict(state, rc)
         duration = format_duration(state.duration(), fixed_decimal_points=2)
         title = '{0}: {1} ({2})'.format(state.identifier, verdict, duration)
 
@@ -145,7 +150,7 @@ class CiStatusEventHandler(EventHandlerExtensionPoint):
             self._say('===== {0} output end ====='.format(state.identifier))
 
         self._say('{0} <<< {1} [{2}]'.format(word, state.identifier, duration))
-        if verdict == 'FAILED' and self._github:
+        if verdict in ('FAILED', 'FAIL') and self._github:
             self._annotate_failure(state)
 
     def _annotate_failure(self, state):
@@ -224,6 +229,12 @@ class CiStatusEventHandler(EventHandlerExtensionPoint):
             self._finish(state, data.rc)
             return
 
+        if isinstance(data, TestFailure):
+            for state in self._jobs.values():
+                if state.identifier == data.identifier:
+                    state.test_failed = True
+            return
+
         if isinstance(data, JobSkipped):
             state = self._state(event[1], data.identifier)
             state.start = state.end = time.monotonic()
@@ -244,3 +255,11 @@ class CiTestStatusEventHandler(CiStatusEventHandler):
 
     SUMMARY_TITLE = 'Test time summary'
     PRINT_SUMMARY = False
+
+    def _verdict(self, state, rc):
+        """'done' for a passing package, 'FAIL' when its tests failed."""
+        if rc == SIGINT_RESULT:
+            return 'ABORTED', 'Aborted'
+        if rc == 0 and not state.test_failed:
+            return 'done', 'Finished'
+        return 'FAIL', 'Failed'

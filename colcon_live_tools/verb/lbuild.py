@@ -265,7 +265,7 @@ class LiveBuildVerb(VerbExtensionPoint):
         # decides live board vs CI log for this run; must happen before
         # colcon creates the event handlers (inside the build's executor)
         apply_output_mode(
-            context.args, live='live_status', ci_handler='ci_status')
+            context.args, live='live_status', ci_handler='live_tools_ci_status')
         return self._build_verb.main(context=context)
 
 

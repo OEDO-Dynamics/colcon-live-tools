@@ -82,6 +82,12 @@ _TEXT = {
             'itself is not affected), so ~/.local packages cannot shadow the '
             'workspace'
         ),
+        'allow_no_tests_help': (
+            'Do not fail in CI mode when no test case was run (by default a run '
+            'with zero test cases ends non-zero in CI mode)'
+        ),
+        'no_tests': 'no test case was run (0 test cases in the JUnit results)',
+        'missing_packages': 'selected package(s) produced no test results: {0}',
         'fail_on_skip_help': (
             'Count a skipped test case as a failure when its skip reason matches '
             'this regular expression (repeatable)'
@@ -121,6 +127,12 @@ _TEXT = {
             'テストのプロセスに PYTHONNOUSERSITE=1 を渡し、~/.local のパッケージが'
             'ワークスペースを隠さないようにする（colcon 本体には影響しない）'
         ),
+        'allow_no_tests_help': (
+            '試験ケースが1件も実行されなくても CI モードで失敗にしない'
+            '（既定では CI モードで 0 件の実行は非0で終わる）'
+        ),
+        'no_tests': '試験ケースが1件も実行されませんでした（junit の試験ケースは 0 件）',
+        'missing_packages': '指定したパッケージから試験結果が出ませんでした: {0}',
         'fail_on_skip_help': (
             'スキップ理由がこの正規表現に一致したテストケースを失敗扱いにする'
             '（複数指定可）'
@@ -159,6 +171,11 @@ _TEXT = {
             'Define PYTHONNOUSERSITE=1 nos processos de teste (o próprio colcon '
             'não é afetado)'
         ),
+        'allow_no_tests_help': (
+            'Não falha no modo CI quando nenhum caso de teste foi executado'
+        ),
+        'no_tests': 'nenhum caso de teste foi executado (0 casos nos resultados JUnit)',
+        'missing_packages': 'pacotes selecionados sem resultados de teste: {0}',
         'fail_on_skip_help': (
             'Conta um teste pulado como falha quando o motivo casa com esta '
             'expressão regular (pode repetir)'
@@ -238,8 +255,8 @@ class LiveTestVerb(VerbExtensionPoint):
         text = _text()
         self._test_verb.add_arguments(parser=parser)
 
-        handlers = _default_event_handlers(live_handler='live_test_status')
-        handlers.append('ltest_recorder+')
+        handlers = _default_event_handlers(live_handler='live_tools_test_status')
+        handlers.append('live_tools_test_recorder+')
         parser.set_defaults(event_handlers=handlers, isolated_domain=True)
         event_handlers_action = _find_action(parser, 'event_handlers')
         if event_handlers_action is not None:
@@ -257,6 +274,8 @@ class LiveTestVerb(VerbExtensionPoint):
         parser.add_argument(
             '--no-user-site', action='store_true', help=text['no_user_site_help'])
         parser.add_argument(
+            '--allow-no-tests', action='store_true', help=text['allow_no_tests_help'])
+        parser.add_argument(
             '--fail-on-skip', dest='fail_on_skip', action='append',
             metavar='PATTERN', type=_regex_arg, default=None,
             help=text['fail_on_skip_help'])
@@ -271,11 +290,11 @@ class LiveTestVerb(VerbExtensionPoint):
         # a test run that produced failures must say so in its exit code
         args.return_code_on_test_failure = True
         ci_on = _ci.apply_output_mode(
-            args, live='live_test_status', ci_handler='ci_test_status')
+            args, live='live_tools_test_status', ci_handler='live_tools_ci_test_status')
         registered = _ci.registered_handler_names()
-        if ('ltest_recorder+' not in args.event_handlers
-                and (registered is None or 'ltest_recorder' in registered)):
-            args.event_handlers = list(args.event_handlers) + ['ltest_recorder+']
+        if ('live_tools_test_recorder+' not in args.event_handlers
+                and (registered is None or 'live_tools_test_recorder' in registered)):
+            args.event_handlers = list(args.event_handlers) + ['live_tools_test_recorder+']
 
         build_base = Path(args.build_base)
         test_result_base = Path(args.test_result_base or args.build_base)
@@ -297,7 +316,9 @@ class LiveTestVerb(VerbExtensionPoint):
 
         env = {}
         if args.isolated_domain:
-            domain_id = _ci.pick_free_domain_id()
+            current = os.environ.get('ROS_DOMAIN_ID', '')
+            exclude = (int(current),) if current.isdigit() else ()
+            domain_id = _ci.pick_free_domain_id(exclude=exclude)
             env = _ci.isolated_test_env(domain_id)
             print(text['isolated_notice'].format(domain_id))
         if args.no_user_site:
@@ -317,6 +338,14 @@ class LiveTestVerb(VerbExtensionPoint):
             for name in records}
         rows = build_rows(summaries, records)
         failed = [row.name for row in rows if row.failed]
+        total_tests = sum(row.tests for row in rows)
+        no_tests = not rows or total_tests == 0
+        missing = [name for name in (args.packages_select or [])
+                   if name not in records]
+        if no_tests:
+            print(text['no_tests'])
+        if missing:
+            print(text['missing_packages'].format(', '.join(missing)))
 
         if not rows:
             print(text['no_packages'])
@@ -343,7 +372,11 @@ class LiveTestVerb(VerbExtensionPoint):
 
         if rc:
             return rc
-        return 1 if failed else 0
+        if failed:
+            return 1
+        if no_tests and ci_on and not args.allow_no_tests:
+            return 1
+        return 0
 
 
 class LiveTestVerbShort(LiveTestVerb):

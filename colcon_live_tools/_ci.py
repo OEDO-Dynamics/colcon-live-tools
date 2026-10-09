@@ -8,7 +8,9 @@ Standard library only, and nothing here imports colcon, so the pieces can be
 unit tested without a ROS workspace.
 
 - `is_ci_mode` decides whether to print the stable, non-interactive log (no
-  cursor movement) instead of the live board.
+  cursor movement) instead of the live board. It is driven only by ``--ci``
+  and the ``CI``/``GITHUB_ACTIONS`` variables, never by a non-TTY stdout, so
+  a piped ``colcon lb`` keeps the output of the earlier releases.
 - `workflow_command` / `annotation` / `group` build GitHub Actions workflow
   commands with the escaping the runner expects.
 - `append_step_summary` / `md_table` write Markdown to `$GITHUB_STEP_SUMMARY`.
@@ -21,7 +23,6 @@ import contextlib
 import os
 import random
 import socket
-import sys
 
 _FALSY = ('', '0', 'false', 'no', 'off')
 
@@ -33,6 +34,10 @@ DDS_DOMAIN_GAIN = 250
 DDS_PORT_OFFSETS = (0, 1, 10, 11)
 #: ROS 2 accepts ROS_DOMAIN_ID values 0..232
 ROS_DOMAIN_ID_MAX = 232
+#: candidates for --isolated-domain. Domain 0 is the default domain (what the
+#: isolation is meant to avoid), and above 101 the DDS ports reach the Linux
+#: ephemeral port range (32768-60999), where a clash would fail at random.
+ISOLATED_DOMAIN_IDS = tuple(range(1, 102))
 
 
 def _flag_set(value):
@@ -45,22 +50,18 @@ def is_github_actions(environ=None):
     return _flag_set(env.get('GITHUB_ACTIONS'))
 
 
-def is_ci_mode(*, forced=False, environ=None, isatty=None):
+def is_ci_mode(*, forced=False, environ=None):
     """
     Decide whether to use the CI log instead of the live terminal board.
 
-    CI mode is on when any of these hold: `forced` (``--ci``), the ``CI`` or
+    CI mode is on when `forced` (``--ci``) is set, or when the ``CI`` or
     ``GITHUB_ACTIONS`` environment variable is set to something other than
-    0/false/no/off, or stdout is not a TTY.
+    0/false/no/off. A non-TTY stdout alone does not turn it on.
     """
     if forced:
         return True
     env = os.environ if environ is None else environ
-    if any(_flag_set(env.get(name)) for name in ('CI', 'GITHUB_ACTIONS')):
-        return True
-    if isatty is None:
-        isatty = sys.stdout.isatty()
-    return not isatty
+    return any(_flag_set(env.get(name)) for name in ('CI', 'GITHUB_ACTIONS'))
 
 
 def registered_handler_names():
@@ -79,8 +80,7 @@ def registered_handler_names():
         return None
 
 
-def apply_output_mode(args, *, live, ci_handler, environ=None, isatty=None,
-                      registered=None):
+def apply_output_mode(args, *, live, ci_handler, environ=None, registered=None):
     """
     Choose the live board or the CI log for this run.
 
@@ -90,11 +90,11 @@ def apply_output_mode(args, *, live, ci_handler, environ=None, isatty=None,
 
     If `ci_handler` is not registered, the live board is kept instead, so
     the run never fails on an unknown handler name.
-    `environ` and `isatty` default to the process environment and stdout;
-    `registered` defaults to `registered_handler_names()`.
+    `environ` defaults to the process environment; `registered` defaults to
+    `registered_handler_names()`.
     """
     ci_on = is_ci_mode(
-        forced=bool(getattr(args, 'ci', False)), environ=environ, isatty=isatty)
+        forced=bool(getattr(args, 'ci', False)), environ=environ)
     if not ci_on:
         return False
     if registered is None:
@@ -218,25 +218,26 @@ def domain_is_free(domain_id, *, port_free=_udp_port_free):
     return all(port_free(port) for port in domain_ports(domain_id))
 
 
-def pick_free_domain_id(*, rng=None, is_free=None):
+def pick_free_domain_id(*, rng=None, is_free=None, exclude=()):
     """
-    Return a random ROS_DOMAIN_ID (0..232) whose DDS ports are unbound.
+    Return a random ROS_DOMAIN_ID from `ISOLATED_DOMAIN_IDS` whose DDS ports
+    are unbound, skipping any in `exclude`.
 
     This is a heuristic: it sees other DDS participants on this host (and
     anything else holding those UDP ports), not ones on other machines.
-    Raises RuntimeError when no domain is free.
+    Raises RuntimeError when no candidate is free.
     """
     rng = rng or random.Random()
     if is_free is None:
         def is_free(domain_id):
             return domain_is_free(domain_id)
-    order = list(range(ROS_DOMAIN_ID_MAX + 1))
+    order = [d for d in ISOLATED_DOMAIN_IDS if d not in set(exclude)]
     rng.shuffle(order)
     for domain_id in order:
         if is_free(domain_id):
             return domain_id
-    raise RuntimeError('no free ROS_DOMAIN_ID (0..{0}) found'.format(
-        ROS_DOMAIN_ID_MAX))
+    raise RuntimeError('no free ROS_DOMAIN_ID in {0}..{1} found'.format(
+        ISOLATED_DOMAIN_IDS[0], ISOLATED_DOMAIN_IDS[-1]))
 
 
 def isolated_test_env(domain_id):

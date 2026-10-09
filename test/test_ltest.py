@@ -47,6 +47,10 @@ ENV_KEYS = ('ROS_DOMAIN_ID', 'ROS_AUTOMATIC_DISCOVERY_RANGE', 'PYTHONNOUSERSITE'
 def _clean_env(monkeypatch):
     for key in ENV_KEYS + ('CI', 'GITHUB_ACTIONS', 'GITHUB_STEP_SUMMARY'):
         monkeypatch.delenv(key, raising=False)
+    # the handler entry points are not installed in the test environment;
+    # "unknown" lets CI mode proceed. The registered-or-fallback rule itself
+    # is covered in test_ci.py
+    monkeypatch.setattr(_ci, 'registered_handler_names', lambda: None)
     run_recorder.reset()
     yield
     run_recorder.reset()
@@ -56,9 +60,12 @@ def _verb(argv, build_base):
     verb = ltest.LiveTestVerb()
     parser = argparse.ArgumentParser(prog='colcon ltest')
     verb.add_arguments(parser=parser)
-    # --packages-select comes from colcon's package-selection extension,
-    # which the bare test environment does not have
-    parser.add_argument('--packages-select', nargs='*', default=None)
+    # --packages-select comes from colcon's package-selection extension; add
+    # it only when that extension is not installed (it would conflict)
+    try:
+        parser.add_argument('--packages-select', nargs='*', default=None)
+    except argparse.ArgumentError:
+        pass
     args = parser.parse_args(['--build-base', str(build_base)] + argv)
     return verb, types.SimpleNamespace(args=args, command_name='colcon')
 
@@ -94,7 +101,7 @@ def _fake_tests(calls, results, *, rc=0):
 
 
 def test_defaults_isolate_the_domain_and_fail_on_failure(tmp_path, monkeypatch):
-    monkeypatch.setattr(_ci, 'pick_free_domain_id', lambda: 42)
+    monkeypatch.setattr(_ci, 'pick_free_domain_id', lambda **kw: 42)
     verb, context = _verb([], tmp_path / 'build')
     calls = []
     verb._test_verb.main = _fake_tests(calls, [('pkg_a', PASSING, 0, False)])
@@ -132,7 +139,7 @@ def test_no_isolated_domain_and_no_user_site(tmp_path, monkeypatch):
 
 def test_failing_testcase_gives_nonzero_and_a_readable_summary(
         tmp_path, capsys, monkeypatch):
-    monkeypatch.setattr(_ci, 'pick_free_domain_id', lambda: 3)
+    monkeypatch.setattr(_ci, 'pick_free_domain_id', lambda **kw: 3)
     verb, context = _verb([], tmp_path / 'build')
     calls = []
     # colcon itself reports 0 here: the JUnit failure must still fail the run
@@ -150,7 +157,7 @@ def test_failing_testcase_gives_nonzero_and_a_readable_summary(
 
 
 def test_nonzero_colcon_rc_is_passed_through(tmp_path, monkeypatch):
-    monkeypatch.setattr(_ci, 'pick_free_domain_id', lambda: 3)
+    monkeypatch.setattr(_ci, 'pick_free_domain_id', lambda **kw: 3)
     verb, context = _verb([], tmp_path / 'build')
     verb._test_verb.main = _fake_tests([], [('pkg_a', None, 2, False)], rc=2)
     assert verb.main(context=context) == 2
@@ -158,7 +165,7 @@ def test_nonzero_colcon_rc_is_passed_through(tmp_path, monkeypatch):
 
 def test_fail_on_skip_turns_a_matching_skip_into_a_failure(
         tmp_path, capsys, monkeypatch):
-    monkeypatch.setattr(_ci, 'pick_free_domain_id', lambda: 3)
+    monkeypatch.setattr(_ci, 'pick_free_domain_id', lambda **kw: 3)
     verb, context = _verb(['--fail-on-skip', 'hardware'], tmp_path / 'build')
     verb._test_verb.main = _fake_tests([], [('pkg_a', SKIPPING, 0, False)])
     assert verb.main(context=context) == 1
@@ -179,7 +186,7 @@ def test_ci_mode_prints_annotations_and_writes_the_step_summary(
     summary = tmp_path / 'summary.md'
     monkeypatch.setenv('GITHUB_ACTIONS', 'true')
     monkeypatch.setenv('GITHUB_STEP_SUMMARY', str(summary))
-    monkeypatch.setattr(_ci, 'pick_free_domain_id', lambda: 3)
+    monkeypatch.setattr(_ci, 'pick_free_domain_id', lambda **kw: 3)
     verb, context = _verb([], tmp_path / 'build')
     verb._test_verb.main = _fake_tests([], [('pkg_a', FAILING, 0, False)])
     verb.main(context=context)
@@ -193,7 +200,7 @@ def test_ci_mode_prints_annotations_and_writes_the_step_summary(
 
 
 def test_no_workflow_commands_outside_github_actions(tmp_path, capsys, monkeypatch):
-    monkeypatch.setattr(_ci, 'pick_free_domain_id', lambda: 3)
+    monkeypatch.setattr(_ci, 'pick_free_domain_id', lambda **kw: 3)
     verb, context = _verb([], tmp_path / 'build')
     verb._test_verb.main = _fake_tests([], [('pkg_a', FAILING, 0, False)])
     verb.main(context=context)
@@ -201,7 +208,7 @@ def test_no_workflow_commands_outside_github_actions(tmp_path, capsys, monkeypat
 
 
 def test_retest_failed_runs_only_the_recorded_failures(tmp_path, monkeypatch):
-    monkeypatch.setattr(_ci, 'pick_free_domain_id', lambda: 3)
+    monkeypatch.setattr(_ci, 'pick_free_domain_id', lambda **kw: 3)
     build = tmp_path / 'build'
     build.mkdir()
     (build / ltest.LAST_FAILED_FILE).write_text(
@@ -217,7 +224,7 @@ def test_retest_failed_runs_only_the_recorded_failures(tmp_path, monkeypatch):
 
 
 def test_retest_failed_intersects_with_packages_select(tmp_path, monkeypatch):
-    monkeypatch.setattr(_ci, 'pick_free_domain_id', lambda: 3)
+    monkeypatch.setattr(_ci, 'pick_free_domain_id', lambda **kw: 3)
     build = tmp_path / 'build'
     build.mkdir()
     (build / ltest.LAST_FAILED_FILE).write_text(
@@ -232,7 +239,7 @@ def test_retest_failed_intersects_with_packages_select(tmp_path, monkeypatch):
 
 def test_retest_failed_without_a_record_runs_everything(
         tmp_path, capsys, monkeypatch):
-    monkeypatch.setattr(_ci, 'pick_free_domain_id', lambda: 3)
+    monkeypatch.setattr(_ci, 'pick_free_domain_id', lambda **kw: 3)
     verb, context = _verb(['--retest-failed'], tmp_path / 'build')
     calls = []
     verb._test_verb.main = _fake_tests(calls, [('pkg_a', PASSING, 0, False)])
@@ -256,6 +263,51 @@ def test_verb_registers_both_names_and_defaults():
     parser = argparse.ArgumentParser()
     verb.add_arguments(parser=parser)
     args = parser.parse_args([])
-    assert 'ltest_recorder+' in args.event_handlers
+    assert 'live_tools_test_recorder+' in args.event_handlers
     assert args.isolated_domain is True
     assert ltest.LiveTestVerbShort.__mro__[1] is ltest.LiveTestVerb
+
+
+def test_zero_test_cases_fail_only_in_ci_mode(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(_ci, 'pick_free_domain_id', lambda **kw: 3)
+    # a package with no JUnit results and exit code 0: zero test cases run
+    verb, context = _verb(['--packages-select', 'pkg_a'], tmp_path / 'build')
+    verb._test_verb.main = _fake_tests([], [('pkg_a', None, 0, False)])
+    assert verb.main(context=context) == 0  # terminal: a warning only
+    assert 'no test case was run' in capsys.readouterr().out
+
+    monkeypatch.setenv('CI', '1')
+    verb, context = _verb(['--packages-select', 'pkg_a'], tmp_path / 'build')
+    verb._test_verb.main = _fake_tests([], [('pkg_a', None, 0, False)])
+    assert verb.main(context=context) == 1  # CI: the empty run is an error
+
+
+def test_allow_no_tests_lets_an_empty_ci_run_pass(tmp_path, monkeypatch):
+    monkeypatch.setattr(_ci, 'pick_free_domain_id', lambda **kw: 3)
+    monkeypatch.setenv('CI', '1')
+    verb, context = _verb(['--allow-no-tests'], tmp_path / 'build')
+    verb._test_verb.main = _fake_tests([], [('pkg_a', None, 0, False)])
+    assert verb.main(context=context) == 0
+
+
+def test_selected_package_without_results_is_reported(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(_ci, 'pick_free_domain_id', lambda **kw: 3)
+    verb, context = _verb(['--packages-select', 'typo_pkg'], tmp_path / 'build')
+    verb._test_verb.main = _fake_tests([], [('pkg_a', PASSING, 0, False)])
+    verb.main(context=context)
+    out = capsys.readouterr().out
+    assert 'produced no test results: typo_pkg' in out
+
+
+def test_isolated_domain_excludes_the_current_domain(tmp_path, monkeypatch):
+    monkeypatch.setenv('ROS_DOMAIN_ID', '7')
+    seen = {}
+
+    def fake_pick(exclude=()):
+        seen['exclude'] = tuple(exclude)
+        return 9
+    monkeypatch.setattr(_ci, 'pick_free_domain_id', fake_pick)
+    verb, context = _verb([], tmp_path / 'build')
+    verb._test_verb.main = _fake_tests([], [('pkg_a', PASSING, 0, False)])
+    verb.main(context=context)
+    assert seen['exclude'] == (7,)
